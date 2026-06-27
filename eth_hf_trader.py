@@ -21,7 +21,7 @@ Usage:
   --verbose: extra debug logging
 """
 
-import eth_abi, requests, json, time, os, sys, argparse, threading, secrets, hmac as _hmac, hashlib, urllib.request, urllib.parse
+import eth_abi, requests, json, time, os, sys, argparse, threading, secrets, hmac as _hmac, hashlib, urllib.request, urllib.parse, stat
 from web3 import Web3
 from datetime import datetime, timezone
 
