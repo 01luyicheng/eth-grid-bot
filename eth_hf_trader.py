@@ -394,9 +394,11 @@ def swap_usdc_for_weth(amount_usdc_wei, entry_price):
         )
         tx = build_tx(USDC, data, gas=50000)
         h  = sign_send_with_retry(tx)
-        if not h or not wait_tx(h):
-            log("  Approve FAILED")
-            nonce_mgr.rollback()
+        if not h:
+            log("  Approve send FAILED")
+            return False   # sign_send_with_retry already rolled back nonce internally
+        if not wait_tx(h):
+            # TX submitted, nonce consumed; do NOT rollback (would double-roll)
             return False
         # No sleep — execute swap immediately for atomicity
 
@@ -414,9 +416,9 @@ def swap_usdc_for_weth(amount_usdc_wei, entry_price):
     h  = sign_send_with_retry(tx)
     if not h:
         log("  Swap send FAILED")
-        return False
+        return False   # sign_send_with_retry already rolled back nonce internally
     if not wait_tx(h):
-        nonce_mgr.rollback()
+        # TX submitted, nonce consumed; do NOT rollback (would double-roll)
         return False
     return True
 
@@ -445,9 +447,9 @@ def swap_weth_for_usdc(amount_weth_wei, exit_price):
     h  = sign_send_with_retry(tx)
     if not h:
         log("  Swap send FAILED")
-        return False
+        return False   # sign_send_with_retry already rolled back nonce internally
     if not wait_tx(h):
-        nonce_mgr.rollback()
+        # TX submitted, nonce consumed; do NOT rollback (would double-roll)
         return False
     return True
 
@@ -822,8 +824,8 @@ def main():
                                         # 继续执行交易，不要 continue
 
                                     log(f"  ✅ Buy filled! Entry ${price:.4f}")
-                                else:
-                                    nonce_mgr.rollback()
+                                # BUY failed: nonce consumed by swap_usdc_for_weth; do NOT rollback
+                                # (swap_usdc_for_retry handles its own rollback semantics)
 
                 elif signal == "SELL":
                     if not state["position"]:
@@ -849,12 +851,18 @@ def main():
                                 log(f"  Wrapping {eth_bal - 0.0001:.6f} ETH...")
                                 tx = build_tx(WETH, "0xd0e30db0", gas=70000, value=wrap_amount)
                                 h  = sign_send_with_retry(tx)
-                                if not h or not wait_tx(h):
+                                if not h:
+                                    # sign_send_with_retry already rolled back nonce internally
                                     log("  Wrap FAILED, skipping sell this cycle", "WARN")
-                                    nonce_mgr.rollback()   # Fix: rollback nonce to avoid conflict on retry
                                     save_state(state)
                                     time.sleep(CHECK_INTERVAL)
-                                    continue  # skip this sell; wait for next signal
+                                    continue
+                                if not wait_tx(h):
+                                    # TX submitted, nonce consumed; do NOT rollback (would double-roll)
+                                    log("  Wrap TX not confirmed within timeout — will retry next cycle", "WARN")
+                                    save_state(state)
+                                    time.sleep(CHECK_INTERVAL)
+                                    continue
                                 time.sleep(5)  # wait for confirm
 
                             ok = swap_weth_for_usdc(size_wei, price)
@@ -875,7 +883,9 @@ def main():
                                 log(f"  ✅ Sell filled! PnL: {pnl:+.4f} | Total today: {state['daily_pnl']:+.4f}")
                                 telegram_notify(f"📤 LONG closed\nPnL: ${pnl:.4f}\nTotal today: ${state.get('daily_pnl', 0):.4f}", "INFO")
                             else:
-                                nonce_mgr.rollback()
+                                # swap failed: nonce consumed by swap_weth_for_usdc; do NOT rollback
+                                # (swap_weth_for_usdc handles its own rollback semantics)
+                                pass
 
             save_state(state)
 

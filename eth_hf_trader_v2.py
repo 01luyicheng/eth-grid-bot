@@ -979,6 +979,7 @@ def main():
                                     time.sleep(3)
                                     if not wrap_ok:
                                         log("  Wrap ETH failed on close, skipping", "WARN")
+                                        nonce_mgr.rollback()
                                         save_state(state)
                                         continue
                                 weth_size = int(POSITION_SIZE_USD / pos["entry"] * 1e18)
@@ -1022,6 +1023,18 @@ def main():
                                     state["_loss_pause_until"] = 0
                                     state["wins"] = state.get("wins", 0) + 1
                                 log(f"  ✅ {pos_type} closed! PnL: {pnl:+.4f} | Daily: {state['daily_pnl']:+.4f}")
+                            else:
+                                # swap failed: nonce was consumed but position unchanged
+                                # update consecutive_loss to prevent infinite loss loop
+                                state["consecutive_loss"] = state.get("consecutive_loss", 0) + 1
+                                state["_loss_pause_until"] = now + 3600
+                                log(f"  Swap failed (nonce consumed), consecutive_loss -> {state['consecutive_loss']}", "WARN")
+                                if state["consecutive_loss"] >= 3:
+                                    log(f"⚠️ {state['consecutive_loss']} consecutive losses — pausing 1h", "WARN")
+                                    telegram_notify(f"🚨 HF-v2: {state['consecutive_loss']} consecutive losses. Pausing 1 hour.", "WARNING")
+                                    time.sleep(3600)
+                                    state["consecutive_loss"] = 0
+                                    state["_loss_pause_until"] = 0
 
             save_state(state)
 
