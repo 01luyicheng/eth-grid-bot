@@ -1,0 +1,41 @@
+# Byte-compiled / optimized Python files
+__pycache__/
+*.py[cod]
+*.so
+
+# Environment and secrets — NEVER commit these
+wallet.env
+.env
+.env.local
+*.pem
+*.key
+pk.txt
+
+# Logs
+*.log
+logs/
+
+# State files
+state.json
+eth_trade_state.json
+/tmp/eth_trade_state.json
+# Persistent state directory (survives reboots)
+data/
+
+# Mihomo proxy config (contains server info)
+*mihomo*
+mihomo_config*
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Editor
+.vscode/
+.idea/
+*.sublime-*
+
+# Lock files (for running instance)
+*.lock
