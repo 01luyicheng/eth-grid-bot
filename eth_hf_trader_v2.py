@@ -224,6 +224,31 @@ class NonceManager:
 
 nonce_mgr = NonceManager(rpc, WALLET)
 
+# === State HMAC protection (same pattern as hf_trader v1) ===
+import hmac as _hmac
+import hashlib as _hashlib
+_STATE_HMAC_KEY_FILE = "/root/.openclaw/workspace/hf_state_hmac.key"
+try:
+    if os.path.exists(_STATE_HMAC_KEY_FILE):
+        _STATE_HMAC_KEY = open(_STATE_HMAC_KEY_FILE, "rb").read()
+        if len(_STATE_HMAC_KEY) < 32:
+            raise ValueError(f"HMAC key too short ({len(_STATE_HMAC_KEY)} bytes)")
+    else:
+        raise FileNotFoundError("HMAC key file not found")
+except Exception:
+    _STATE_HMAC_KEY = secrets.token_bytes(32)
+    with open(_STATE_HMAC_KEY_FILE, "wb") as f:
+        f.write(_STATE_HMAC_KEY)
+    os.chmod(_STATE_HMAC_KEY_FILE, 0o600)
+    log(f"[WARN] HMAC key generated (file was missing)", "WARN")
+
+def _state_sign(data):
+    return _hmac.new(
+        _STATE_HMAC_KEY,
+        json.dumps(data, sort_keys=True).encode(),
+        _hashlib.sha256
+    ).hexdigest()
+
 def get_gas_price_gwei():
     return int(rpc("eth_gasPrice")["result"], 16) / 1e9  # in Gwei
 
@@ -699,6 +724,12 @@ def load_state():
         try:
             with open(STATE_FILE) as f:
                 raw = json.load(f)
+            saved_sig = raw.pop("_hmac", None)
+            if saved_sig is not None:
+                expected = _state_sign(raw)
+                if not secrets.compare_digest(saved_sig, expected):
+                    log("WARNING: State HMAC mismatch — possible tampering, resetting state", "WARN")
+                    return default_state()
             s = default_state()
             s.update(raw)
             return s
@@ -708,6 +739,9 @@ def load_state():
 
 def save_state(state):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    sig_data = dict(state)
+    sig_data.pop("_hmac", None)
+    state["_hmac"] = _state_sign(sig_data)
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
@@ -875,6 +909,15 @@ def main():
             if can_trade and signal in ("BUY", "SELL"):
                 pos = state.get("position")
 
+                # consecutive_loss protection: pause if too many consecutive losses
+                if state.get("consecutive_loss", 0) >= 3:
+                    remaining = max(0, state.get("_loss_pause_until", 0) - now)
+                    if remaining > 0:
+                        log(f"⚠️ Consecutive loss pause: {remaining:.0f}s remaining — skipping signal", "WARN")
+                        telegram_notify(f"⚠️ HF-v2: {state['consecutive_loss']} consecutive losses. Paused {remaining:.0f}s.", "WARNING")
+                        time.sleep(min(remaining, 60))
+                        continue
+
                 if signal == "BUY" and not pos:
                     if usdc_bal < min_usdc_needed:
                         log(f"  Not enough USDC: ${usdc_bal:.4f} < ${min_usdc_needed:.4f}")
@@ -903,8 +946,11 @@ def main():
                         else:
                             # Wrap ETH first
                             if eth_bal > 0.0001:
-                                wrap_eth(int((eth_bal - 0.0001) * 1e18))
+                                wrap_ok = wrap_eth(int((eth_bal - 0.0001) * 1e18))
                                 time.sleep(3)
+                                if not wrap_ok:
+                                    log("  Wrap ETH failed, skipping signal", "WARN")
+                                    continue
                             ok = swap_weth_for_usdc(int(min_weth_needed * 1e18), price)
                             if ok:
                                 state["position"] = {
@@ -925,10 +971,15 @@ def main():
                         if mode == "PAPER":
                             paper_trade_close(state, reason, price, gas_cost)
                         else:
+                            pnl = 0.0
                             if pos_type == "LONG":
                                 if eth_bal > 0.0001:
-                                    wrap_eth(int((eth_bal - 0.0001) * 1e18))
+                                    wrap_ok = wrap_eth(int((eth_bal - 0.0001) * 1e18))
                                     time.sleep(3)
+                                    if not wrap_ok:
+                                        log("  Wrap ETH failed on close, skipping", "WARN")
+                                        save_state(state)
+                                        continue
                                 weth_size = int(POSITION_SIZE_USD / pos["entry"] * 1e18)
                                 ok = swap_weth_for_usdc(weth_size, price)
                                 if ok:
@@ -948,10 +999,27 @@ def main():
                                     "reason": reason,
                                     "entry": pos["entry"], "exit": price,
                                 })
-                                if pnl >= 0:
-                                    state["wins"] = state.get("wins", 0) + 1
+                                # Update consecutive_loss counter
+                                if pnl < 0:
+                                    state["consecutive_loss"] = state.get("consecutive_loss", 0) + 1
+                                    state["_loss_pause_until"] = now + 3600
+                                    telegram_notify(
+                                        f"⚠️ Loss #{state['consecutive_loss']}\nPrice: ${price:.4f}\nPnL: {pnl:+.4f}",
+                                        "WARNING"
+                                    )
+                                    if state["consecutive_loss"] >= 3:
+                                        log(f"⚠️ {state['consecutive_loss']} consecutive losses — pausing 1h", "WARN")
+                                        telegram_notify(
+                                            f"🚨 {state['consecutive_loss']} consecutive losses. Pausing 1 hour.",
+                                            "WARNING"
+                                        )
+                                        time.sleep(3600)
+                                        state["consecutive_loss"] = 0
+                                        state["_loss_pause_until"] = 0
                                 else:
-                                    state["losses"] = state.get("losses", 0) + 1
+                                    state["consecutive_loss"] = 0
+                                    state["_loss_pause_until"] = 0
+                                    state["wins"] = state.get("wins", 0) + 1
                                 log(f"  ✅ {pos_type} closed! PnL: {pnl:+.4f} | Daily: {state['daily_pnl']:+.4f}")
 
             save_state(state)

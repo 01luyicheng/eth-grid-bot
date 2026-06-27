@@ -165,11 +165,18 @@ if not WALLET or not WALLET.startswith("0x"):
 _HMAC_KEY_FILE = "/root/.openclaw/workspace/wallet/state_hmac.key"
 if os.path.exists(_HMAC_KEY_FILE):
     STATE_HMAC_KEY = open(_HMAC_KEY_FILE, "rb").read()
+    # Re-check permissions on every load (in case they were changed)
+    st_hmac = os.stat(_HMAC_KEY_FILE)
+    if stat.S_IMODE(st_hmac.st_mode) & 0o077:
+        raise RuntimeError(f"{_HMAC_KEY_FILE} permissions are too open; must be 0o600")
+    if len(STATE_HMAC_KEY) < 32:
+        raise RuntimeError(f"{_HMAC_KEY_FILE} key too short; regenerate")
 else:
     STATE_HMAC_KEY = secrets.token_bytes(32)
     with open(_HMAC_KEY_FILE, "wb") as f:
         f.write(STATE_HMAC_KEY)
     os.chmod(_HMAC_KEY_FILE, 0o600)
+    log(f"Generated new HMAC key: {_HMAC_KEY_FILE}")
 
 # === Gas constants ===
 PRIORITY_FEE = 500_000_000  # 0.5 gwei — fixed tip for EIP-1559

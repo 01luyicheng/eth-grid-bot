@@ -455,13 +455,22 @@ def swap_weth_for_usdc(amount_weth_wei, exit_price):
 # STATE MANAGEMENT + HMAC INTEGRITY
 # ============================================================
 _HMAC_KEY_FILE = "/root/.openclaw/workspace/hf_state_hmac.key"
-if os.path.exists(_HMAC_KEY_FILE):
-    _HF_HMAC_KEY = open(_HMAC_KEY_FILE, "rb").read()
-else:
+try:
+    if os.path.exists(_HMAC_KEY_FILE):
+        _HF_HMAC_KEY = open(_HMAC_KEY_FILE, "rb").read()
+        if len(_HF_HMAC_KEY) < 32:
+            raise ValueError(f"HMAC key too short ({len(_HF_HMAC_KEY)} bytes)")
+        st_hmac = os.stat(_HMAC_KEY_FILE)
+        if stat.S_IMODE(st_hmac.st_mode) & 0o077:
+            raise RuntimeError(f"{_HMAC_KEY_FILE} permissions too open: must be 0o600")
+    else:
+        raise FileNotFoundError("HMAC key file not found")
+except Exception:
     _HF_HMAC_KEY = secrets.token_bytes(32)
     with open(_HMAC_KEY_FILE, "wb") as f:
         f.write(_HF_HMAC_KEY)
     os.chmod(_HMAC_KEY_FILE, 0o600)
+    log(f"[WARN] HMAC key regenerated (file missing or corrupt)", "WARN")
 
 def _hf_state_sign(data):
     return _hmac.new(
