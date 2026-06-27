@@ -39,6 +39,8 @@ import argparse
 import statistics
 import warnings
 import threading
+import urllib.request
+import urllib.parse
 from datetime import datetime, timezone
 from web3 import Web3
 
@@ -48,10 +50,15 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ============================================================
 WALLET_ENV  = "/root/.openclaw/workspace/wallet/wallet.env"
-STATE_FILE  = "/tmp/eth_hf_v2_state.json"
+STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
 LOG_FILE    = "/tmp/eth_hf_v2.log"
 
-# Load wallet
+# --- Load wallet credentials (with file permission check) ---
+st = os.stat(WALLET_ENV)
+mode = st.st_mode & 0o777
+if mode != 0o600:
+    raise RuntimeError(f"wallet.env permissions {oct(mode)} are too open; must be 0o600")
+
 PRIVATE_KEY = WALLET = None
 for line in open(WALLET_ENV):
     line = line.strip()
@@ -118,12 +125,64 @@ acct = w3.eth.account.from_key(PRIVATE_KEY)
 # ============================================================
 # HELPERS
 # ============================================================
+
+# === Telegram Alerts ===
+_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+def telegram_notify(message, priority="INFO"):
+    """Send alert via Telegram Bot. Silent failure if not configured."""
+    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
+        return
+    text = f"[{priority}] ETH-HF-Trader-v2\n{message}"
+    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
+    try:
+        req = urllib.request.Request(url, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+    except Exception:
+        pass  # silent failure
+
+# === Heartbeat (health check) ===
+_HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2"
+
+def _heartbeat_writer():
+    """Write heartbeat timestamp every 60 seconds."""
+    while True:
+        try:
+            os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
+            with open(_HEARTBEAT_FILE, "w") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
+        time.sleep(60)
+
+def start_heartbeat():
+    t = threading.Thread(target=_heartbeat_writer, daemon=True)
+    t.start()
+
+def is_alive(max_age=180):
+    """Return True if bot wrote a heartbeat within max_age seconds."""
+    try:
+        with open(_HEARTBEAT_FILE) as f:
+            return time.time() - float(f.read().strip()) < max_age
+    except Exception:
+        return False
+
 def log(msg, level="INFO"):
     ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] [{level}] {msg}"
     print(line)
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
+    # Refresh heartbeat on any log activity
+    try:
+        os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
+        with open(_HEARTBEAT_FILE, "w") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
 
 def rpc(method, params=None):
     r = session.post(RPC, json={
@@ -632,6 +691,7 @@ def default_state():
         "losses":           0,
         "signals_skipped":  0,
         "gas_too_high":     0,
+        "consecutive_loss": 0,   # Fix: added consecutive_loss protection
     }
 
 def load_state():
@@ -647,6 +707,7 @@ def load_state():
     return default_state()
 
 def save_state(state):
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     tmp = STATE_FILE + ".tmp"
     with open(tmp, "w") as f:
         json.dump(state, f, indent=2)
@@ -664,6 +725,10 @@ def main():
     args = parser.parse_args()
 
     mode = "LIVE" if args.live else "PAPER"
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    start_heartbeat()
+    log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2")
+    telegram_notify(f"🚀 HF Trader v2 started [{mode}]\nWallet: {WALLET}", "INFO")
     log(f"=== HF ETH Trader v2 STARTED [{mode}] ===")
     log(f"Wallet:         {WALLET}")
     log(f"Position size:  ${POSITION_SIZE_USD} / trade")
