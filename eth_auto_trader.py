@@ -70,7 +70,8 @@ for line in open(_WALLET_ENV):
     elif line.startswith("SLIPPAGE="):
         SLIPPAGE_TXT = line.split("=", 1)[1].split("#")[0].strip()
     elif line.startswith("TRAIL_TRIGGER_PRICE="):
-        TRAIL_TRIGGER_PRICE = float(line.split("=", 1)[1].split("#")[0].strip())
+        val = line.split("=", 1)[1].split("#")[0].strip()
+        TRAIL_TRIGGER_PRICE = None if val.lower() == 'auto' else float(val)
     elif line.startswith("MIN_BALANCE_ETH="):
         MIN_BALANCE_ETH = float(line.split("=", 1)[1].split("#")[0].strip())
     # [VolGrid] New config parameters from wallet.env
@@ -182,7 +183,7 @@ else:
 PRIORITY_FEE = 500_000_000  # 0.5 gwei — fixed tip for EIP-1559
 
 RPC = "https://mainnet.base.org"
-PROXY = "http://127.0.0.1:10808"
+PROXY = ""  # no proxy
 
 # === Telegram Alerts ===
 _TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -227,7 +228,7 @@ os.makedirs(_STATE_DIR, exist_ok=True)
 LOG_FILE   = "/tmp/eth_trader.log"
 
 session = requests.Session()
-session.proxies = {"http": PROXY, "https": PROXY}
+session.proxies = {}  # direct
 w3 = Web3()
 acct = w3.eth.account.from_key(PRIVATE_KEY)
 
@@ -261,7 +262,7 @@ class NonceManager:
             if self._nonce is not None and self._nonce > 0:
                 self._nonce -= 1
 
-nonce_mgr = NonceManager(rpc, WALLET)
+nonce_mgr = NonceManager(RPC, WALLET)
 
 # === Heartbeat (health check) ===
 import threading as _heartbeat_thread
@@ -278,6 +279,7 @@ def _heartbeat_writer():
         time.sleep(60)
 
 def start_heartbeat():
+
     t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
     t.start()
 
@@ -319,16 +321,20 @@ def rpc(method, params=None):
 def get_nonce():
     return int(rpc("eth_getTransactionCount", [WALLET, "pending"])["result"], 16)
 
-def get_gas_price():
-    return int(rpc("eth_gasPrice")["result"], 16)
-
 def get_max_fee():
     """EIP-1559: maxFeePerGas = (baseFee * 2) + priorityFee.
-    get_gas_price() returns baseFee + priorityFee combined, so we back out
-    priorityFee as a fixed ~0.5 gwei (Base typical) and recompute correctly."""
-    combined = get_gas_price()   # = baseFee + priorityFee
-    base_fee = combined - PRIORITY_FEE
-    return base_fee * 2 + PRIORITY_FEE
+    Uses eth_maxPriorityFeePerGas (dynamic) + baseFee from latest block,
+    instead of the broken eth_gasPrice subtraction approach."""
+    try:
+        block = rpc("eth_getBlockByNumber", ["latest", False])
+        base_fee = int(block["result"]["baseFeePerGas"], 16)
+        pri_fee_raw = rpc("eth_maxPriorityFeePerGas", [])
+        priority_fee = int(pri_fee_raw["result"], 16) if pri_fee_raw else PRIORITY_FEE
+        return base_fee * 2 + priority_fee
+    except Exception:
+        # Fallback: use eth_gasPrice + 20% buffer
+        raw = int(rpc("eth_gasPrice")["result"], 16)
+        return int(raw * 1.2)
 
 def sign_send(tx, state=None):
     """Sign and send a transaction.
@@ -809,7 +815,6 @@ def main():
 
     log("=== Multi-Grid ETH Auto-Trader STARTED ===")
     log(f"Wallet: {WALLET}")
-    telegram_notify(f"🚀 ETH Grid Bot started\nPrice: ${init_price:.2f}\nGrid: {BUY_LEVELS[0]:.0f}~{SELL_LEVELS[-1]:.0f}", "INFO")
     log(f"Grid center: {GRID_CENTER} | Range: ±{GRID_RANGE_PCT}% | Tiers: {GRID_TIERS}")
     log(f"Stop-loss buffer: {STOP_LOSS_BUFFER_PCT}% | Swap: {SWAP_AMOUNT_WETH} ETH | Check: {CHECK_INTERVAL}s")
     # [VolGrid] Log new feature states
@@ -820,6 +825,8 @@ def main():
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
     start_heartbeat()
 
+    state = load_state()
+
     # [Scheme B] Compute dynamic grid levels from parameters
     if GRID_CENTER == "auto":
         # [Fix#8] Pass state for price sanity check on init
@@ -827,11 +834,14 @@ def main():
         if init_price is None:
             log("FATAL: cannot fetch price for auto-grid, exiting")
             sys.exit(1)
-        grid_center = init_price
     else:
-        grid_center = float(GRID_CENTER)
+        init_price = float(GRID_CENTER)
+    grid_center = init_price
 
     BUY_LEVELS, SELL_LEVELS = compute_grid_levels(grid_center, GRID_RANGE_PCT, GRID_TIERS)
+    # Notify Telegram after grid is computed
+    telegram_notify(f"🚀 ETH Grid Bot started\nPrice: ${init_price:.2f}\nGrid: {BUY_LEVELS[0]:.0f}~{SELL_LEVELS[-1]:.0f}", "INFO")
+
 
     # Compute dynamic STOP_LOSS from grid bottom
     STOP_LOSS = round(BUY_LEVELS[0] * (1 - STOP_LOSS_BUFFER_PCT / 100), 2)
@@ -844,7 +854,6 @@ def main():
     TRAIL_TRIGGER_PRICE = round(SELL_LEVELS[-1] * 1.02, 2)
     log(f"[AUTO-GRID] TRAIL_TRIGGER_PRICE = ${TRAIL_TRIGGER_PRICE:.2f} (dynamic, 2% above grid top ${SELL_LEVELS[-1]:.2f})")
 
-    state = load_state()
 
     # Log restored state
     if state["buy_triggered"] or state["sell_triggered"] or state["trail_armed"]:
@@ -944,6 +953,8 @@ def main():
                     state["grid_center"] = new_center
                     # [Fix#8] Recompute BUY/SELL levels after drift shift
                     BUY_LEVELS, SELL_LEVELS = compute_grid_levels(
+    # Notify Telegram after grid is computed
+
                         effective_grid_center, GRID_RANGE_PCT, GRID_TIERS)
                     STOP_LOSS = round(BUY_LEVELS[0] * (1 - STOP_LOSS_BUFFER_PCT / 100), 2)
                     log(f"[VolGrid] DRIFT recomputed BUY={BUY_LEVELS} SELL={SELL_LEVELS} STOP_LOSS=${STOP_LOSS:.2f}")
@@ -955,6 +966,8 @@ def main():
                     log(f"[VolGrid] Price ${price:.2f} drifted >5% from init center ${init_grid_center:.2f}, "
                         f"refreshing static grid")
                     BUY_LEVELS, SELL_LEVELS = compute_grid_levels(
+    # Notify Telegram after grid is computed
+
                         init_grid_center, GRID_RANGE_PCT, GRID_TIERS)
                     STOP_LOSS = round(BUY_LEVELS[0] * (1 - STOP_LOSS_BUFFER_PCT / 100), 2)
                     grid_center = init_grid_center
