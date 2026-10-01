@@ -52,7 +52,7 @@ warnings.filterwarnings('ignore')
 # ============================================================
 WALLET_ENV  = "/root/.openclaw/workspace/wallet/wallet.env"
 STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
-LOG_FILE    = "/tmp/eth_hf_v2.log"
+LOG_FILE    = "/root/.openclaw/workspace/eth-grid-bot/data/eth_hf_v2.log"
 
 # --- Load wallet credentials (with file permission check) ---
 st = os.stat(WALLET_ENV)
@@ -136,14 +136,12 @@ def telegram_notify(message, priority="INFO"):
     if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
         return
     text = f"[{priority}] ETH-HF-Trader-v2\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
+    url = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": _TELEGRAM_CHAT_ID, "text": text}
     try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        log(f"[Telegram] Notify failed: {e}")
 
 # === Heartbeat (health check) ===
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2"
@@ -155,8 +153,8 @@ def _heartbeat_writer():
             os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat write failed: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -182,8 +180,8 @@ def log(msg, level="INFO"):
         os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Heartbeat write failed: {e}")
 
 def rpc(method, params=None):
     r = session.post(RPC, json={

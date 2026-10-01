@@ -34,8 +34,8 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+LOG_FILE      = "/root/.openclaw/workspace/eth-grid-bot/data/eth_hf_trader.log"
+DATA_DIR      = "/root/.openclaw/workspace/eth-grid-bot/data/eth_hf_data"
 
 # --- Load wallet credentials ---
 PRIVATE_KEY = WALLET = None
@@ -96,14 +96,12 @@ def telegram_notify(message, priority="INFO"):
     if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
         return
     text = f"[{priority}] ETH-HF-Trader\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
+    url = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": _TELEGRAM_CHAT_ID, "text": text}
     try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        log(f"[Telegram] Notify failed: {e}")
 
 # ============================================================
 # SESSION & WEB3
@@ -127,8 +125,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat write failed: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -153,8 +151,8 @@ def log(msg, level="INFO"):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Heartbeat write failed: {e}")
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -336,8 +334,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Gate.io] Error fetching latest price: {e}")
     return None
 
 # ============================================================
