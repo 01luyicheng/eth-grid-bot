@@ -194,14 +194,12 @@ def telegram_notify(message, priority="INFO"):
     if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
         return
     text = f"[{priority}] ETH-Grid-Bot\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
+    url = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
+    data = {"chat_id": _TELEGRAM_CHAT_ID, "text": text}
     try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        log(f"[Telegram] Notify failed: {e}")
 
 # DeFi addresses (Base mainnet)
 WETH   = "0x4200000000000000000000000000000000000006"
@@ -225,7 +223,7 @@ _STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE  = os.path.join(_STATE_DIR, "trade_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE   = "/tmp/eth_trader.log"
+LOG_FILE   = "/root/.openclaw/workspace/eth-grid-bot/data/eth_trader.log"
 
 session = requests.Session()
 session.proxies = {}  # direct
@@ -274,8 +272,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat write failed: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -301,8 +299,8 @@ def log(msg):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Heartbeat write failed: {e}")
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
@@ -805,7 +803,7 @@ def should_alert(state, key, msg, cooldown=14400):
 # === Main loop ===
 def main():
     # [Bug#2] Single-instance lock — prevents nonce conflicts from concurrent runs
-    LOCK_FILE = "/tmp/eth_trader.lock"
+    LOCK_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/eth_trader.lock"
     lock_f = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
