@@ -50,3 +50,55 @@ def check_wallet_env_permissions(wallet_env_path):
     mode = st.st_mode & 0o777
     if mode != 0o600:
         raise RuntimeError(f"{wallet_env_path} permissions {oct(mode)} are too open; must be 0o600")
+
+import eth_abi
+
+class NonceManager:
+    def __init__(self, rpc_fn, wallet):
+        self.rpc    = rpc_fn
+        self.wallet = wallet
+        self._nonce = None
+        self._lock  = threading.Lock()
+
+    def get(self):
+        with self._lock:
+            if self._nonce is None:
+                self._nonce = int(
+                    self.rpc("eth_getTransactionCount", [self.wallet, "pending"])
+                    ["result"], 16
+                )
+            nonce = self._nonce
+            self._nonce += 1
+            return nonce
+
+    def confirm(self):
+        """Called after a transaction is confirmed on-chain."""
+        with self._lock:
+            pass
+
+    def rollback(self):
+        """Called when a transaction fails — restore the pre-incremented nonce."""
+        with self._lock:
+            if self._nonce is not None and self._nonce > 0:
+                self._nonce -= 1
+
+def _exact_input_single(params):
+    """
+    Uniswap V3 exactInputSingle with flat ABI encoding.
+    selector = 0x414bf389
+    """
+    selector = "414bf389"
+    encoded = eth_abi.encode(
+        ['address','address','uint24','address','uint256','uint256','uint256','uint160'],
+        [
+            params["token_in"],
+            params["token_out"],
+            params["fee"],
+            params["recipient"],
+            params["deadline"],
+            params["amount_in"],
+            params["amount_out_min"],
+            params.get("sqrt_price_limit", 0),
+        ]
+    )
+    return selector + encoded.hex()

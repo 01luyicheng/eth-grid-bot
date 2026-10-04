@@ -44,7 +44,7 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 from web3 import Web3
-from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, check_wallet_env_permissions
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, check_wallet_env_permissions, NonceManager, _exact_input_single
 
 warnings.filterwarnings('ignore')
 
@@ -160,34 +160,6 @@ def rpc(method, params=None):
 
 def get_nonce():
     return int(rpc("eth_getTransactionCount", [WALLET, "pending"])["result"], 16)
-
-
-class NonceManager:
-    def __init__(self, rpc_fn, wallet):
-        self.rpc    = rpc_fn
-        self.wallet = wallet
-        self._nonce = None
-        self._lock  = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            if self._nonce is None:
-                self._nonce = int(
-                    self.rpc("eth_getTransactionCount", [self.wallet, "pending"])
-                    ["result"], 16
-                )
-            nonce = self._nonce
-            self._nonce += 1
-            return nonce
-
-    def confirm(self):
-        with self._lock:
-            pass
-
-    def rollback(self):
-        with self._lock:
-            if self._nonce is not None and self._nonce > 0:
-                self._nonce -= 1
 
 nonce_mgr = NonceManager(rpc, WALLET)
 
@@ -523,19 +495,6 @@ class StrategyEngine:
 # ============================================================
 # TRADE EXECUTION (Web3)
 # ============================================================
-def _exact_input_single(params):
-    selector = "414bf389"
-    encoded  = eth_abi.encode(
-        ['address','address','uint24','address','uint256','uint256','uint256','uint160'],
-        [
-            params["token_in"], params["token_out"], params["fee"],
-            params["recipient"], params["deadline"],
-            params["amount_in"], params["amount_out_min"],
-            params.get("sqrt_price_limit", 0),
-        ]
-    )
-    return selector + encoded.hex()
-
 SLIPPAGE = 0.005
 
 def ensure_approval(token, amount_wei):

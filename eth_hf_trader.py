@@ -24,7 +24,7 @@ Usage:
 import eth_abi, requests, json, time, os, sys, argparse, threading, secrets, hmac as _hmac, hashlib, urllib.request, urllib.parse, stat
 from web3 import Web3
 from datetime import datetime, timezone
-from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, check_wallet_env_permissions
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, check_wallet_env_permissions, NonceManager, _exact_input_single
 
 # ============================================================
 # CONFIGURATION
@@ -151,35 +151,6 @@ def rpc(method, params=None):
 # NONCE MANAGER — prevents race condition on concurrent txs
 # (Critical fix #2)
 # ============================================================
-class NonceManager:
-    def __init__(self, rpc_fn, wallet):
-        self.rpc    = rpc_fn
-        self.wallet = wallet
-        self._nonce = None
-        self._lock  = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            if self._nonce is None:
-                self._nonce = int(
-                    self.rpc("eth_getTransactionCount", [self.wallet, "pending"])
-                    ["result"], 16
-                )
-            nonce = self._nonce
-            self._nonce += 1
-            return nonce
-
-    def confirm(self):
-        """Called after a transaction is confirmed on-chain."""
-        with self._lock:
-            pass  # nonce was pre-incremented on get(); nothing extra needed
-
-    def rollback(self):
-        """Called when a transaction fails — restore the pre-incremented nonce."""
-        with self._lock:
-            if self._nonce is not None and self._nonce > 0:
-                self._nonce -= 1
-
 nonce_mgr = NonceManager(rpc, WALLET)
 
 def get_gas_price():
@@ -335,19 +306,6 @@ def get_eth_price_cached():
 # ============================================================
 # ON-CHAIN TRADES
 # ============================================================
-def _exact_input_single(params):
-    selector = "414bf389"
-    encoded  = eth_abi.encode(
-        ['address','address','uint24','address','uint256','uint256','uint256','uint160'],
-        [
-            params["token_in"], params["token_out"], params["fee"],
-            params["recipient"], params["deadline"],
-            params["amount_in"], params["amount_out_min"],
-            params.get("sqrt_price_limit", 0),
-        ]
-    )
-    return selector + encoded.hex()
-
 def swap_usdc_for_weth(amount_usdc_wei, entry_price):
     """Buy WETH with USDC. Returns True on success."""
     amount_out_min = int(amount_usdc_wei / entry_price * (1 - SLIPPAGE))

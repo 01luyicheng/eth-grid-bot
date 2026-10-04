@@ -22,7 +22,7 @@ BUG FIXES APPLIED (2026-06-18):
 """
 import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading, urllib.request, urllib.parse
 from web3 import Web3
-from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, NonceManager, _exact_input_single
 
 # === wallet.env path ===
 _WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
@@ -221,38 +221,6 @@ session.proxies = {}  # direct
 w3 = Web3()
 acct = w3.eth.account.from_key(PRIVATE_KEY)
 
-# [Fix#10] NonceManager — prevents race condition on concurrent txs
-class NonceManager:
-    def __init__(self, rpc_fn, wallet):
-        self.rpc    = rpc_fn
-        self.wallet = wallet
-        self._nonce = None
-        self._lock  = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            if self._nonce is None:
-                self._nonce = int(
-                    self.rpc("eth_getTransactionCount", [self.wallet, "pending"])
-                    ["result"], 16
-                )
-            nonce = self._nonce
-            self._nonce += 1
-            return nonce
-
-    def confirm(self):
-        """Called after a transaction is confirmed on-chain."""
-        with self._lock:
-            pass  # nonce was pre-incremented on get(); nothing extra needed
-
-    def rollback(self):
-        """Called when a transaction fails — restore the pre-incremented nonce."""
-        with self._lock:
-            if self._nonce is not None and self._nonce > 0:
-                self._nonce -= 1
-
-nonce_mgr = NonceManager(RPC, WALLET)
-
 # === Heartbeat (health check) ===
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto"
 
@@ -289,6 +257,9 @@ def rpc(method, params=None):
 
 def get_nonce():
     return int(rpc("eth_getTransactionCount", [WALLET, "pending"])["result"], 16)
+
+# [Fix#10] NonceManager — prevents race condition on concurrent txs
+nonce_mgr = NonceManager(rpc_with_retry, WALLET)
 
 def get_max_fee():
     """EIP-1559: maxFeePerGas = (baseFee * 2) + priorityFee.
@@ -566,27 +537,6 @@ def compute_grid_levels(center_price, range_pct, tiers):
         round(center_price + step * i, 2) for i in range(1, tiers)
     ])
     return buy_levels, sell_levels
-
-def _exact_input_single(params):
-    """
-    Uniswap V3 exactInputSingle with flat ABI encoding.
-    selector = 0x414bf389
-    """
-    selector = "414bf389"
-    encoded = eth_abi.encode(
-        ['address','address','uint24','address','uint256','uint256','uint256','uint160'],
-        [
-            params["token_in"],
-            params["token_out"],
-            params["fee"],
-            params["recipient"],
-            params["deadline"],
-            params["amount_in"],
-            params["amount_out_min"],
-            params.get("sqrt_price_limit", 0),
-        ]
-    )
-    return selector + encoded.hex()
 
 def swap_weth_for_usdc(amount_wei, price, state=None):
     """Sell WETH → USDC with slippage protection"""
