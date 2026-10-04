@@ -22,6 +22,7 @@ BUG FIXES APPLIED (2026-06-18):
 """
 import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading, urllib.request, urllib.parse
 from web3 import Web3
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat
 
 # === wallet.env path ===
 _WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
@@ -189,19 +190,7 @@ PROXY = ""  # no proxy
 _TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 _TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-Grid-Bot\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):  # nosec B310
-            pass
-    except Exception as e:
-        print(f"Telegram notify failed: {e}")  # handled silent failure
+# Telegram notification moved to shared_utils
 
 # DeFi addresses (Base mainnet)
 WETH   = "0x4200000000000000000000000000000000000006"
@@ -265,23 +254,7 @@ class NonceManager:
 nonce_mgr = NonceManager(RPC, WALLET)
 
 # === Heartbeat (health check) ===
-import threading as _heartbeat_thread
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto"
-
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception as e:
-            print(f"Heartbeat writer failed: {e}")
-        time.sleep(60)
-
-def start_heartbeat():
-
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
 
 def is_alive(max_age=180):
     """Return True if bot wrote a heartbeat within max_age seconds."""
@@ -298,11 +271,7 @@ def log(msg):
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
     # Refresh heartbeat on any log activity
-    try:
-        with open(_HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except Exception as e:
-        print(f"Log heartbeat update failed: {e}")
+    refresh_heartbeat(_HEARTBEAT_FILE)
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
@@ -823,7 +792,7 @@ def main():
         f"DynSL-ATR-mult: {DYNAMIC_STOP_LOSS_ATR_MULT}")
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto")
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
 
     state = load_state()
 
@@ -840,7 +809,7 @@ def main():
 
     BUY_LEVELS, SELL_LEVELS = compute_grid_levels(grid_center, GRID_RANGE_PCT, GRID_TIERS)
     # Notify Telegram after grid is computed
-    telegram_notify(f"🚀 ETH Grid Bot started\nPrice: ${init_price:.2f}\nGrid: {BUY_LEVELS[0]:.0f}~{SELL_LEVELS[-1]:.0f}", "INFO")
+    telegram_notify(f"🚀 ETH Grid Bot started\nPrice: ${init_price:.2f}\nGrid: {BUY_LEVELS[0]:.0f}~{SELL_LEVELS[-1]:.0f}", "INFO", "ETH-Grid-Bot")
 
 
     # Compute dynamic STOP_LOSS from grid bottom
@@ -998,7 +967,7 @@ def main():
                     save_state(state)
                     ok = liquidate_all(price, state=state)
                     if ok:
-                        telegram_notify(f"🛑 STOP LOSS triggered!\nPrice: ${price:.2f}\nAll grids reset.", "CRITICAL")
+                        telegram_notify(f"🛑 STOP LOSS triggered!\nPrice: ${price:.2f}\nAll grids reset.", "CRITICAL", "ETH-Grid-Bot")
                         state["pending_stop_loss"] = False
                         state["trail_armed"] = False
                         state["trail_peak"] = None
@@ -1086,7 +1055,7 @@ def main():
                         trail_peak = state["trail_peak"]
                         ok = liquidate_all(price, state=state)
                         if ok:
-                            telegram_notify(f"📉 TRAILING STOP triggered!\nPeak: ${trail_peak:.2f}\nProfit protected.", "WARNING")
+                            telegram_notify(f"📉 TRAILING STOP triggered!\nPeak: ${trail_peak:.2f}\nProfit protected.", "WARNING", "ETH-Grid-Bot")
                             state["trail_armed"] = False
                             state["trail_peak"] = None
                             state["trail_triggered"] = True  # [Fix#6] Mark trail as triggered
@@ -1138,7 +1107,7 @@ def main():
                         # [Fix#11] Track consecutive losses
                         state["consecutive_loss"] = state.get("consecutive_loss", 0) + 1
                         if state["consecutive_loss"] >= CONSECUTIVE_LOSS_PAUSE:
-                            telegram_notify(f"⚠️ {state['consecutive_loss']} consecutive losses.\nBot paused 1 hour.", "WARNING")
+                            telegram_notify(f"⚠️ {state['consecutive_loss']} consecutive losses.\nBot paused 1 hour.", "WARNING", "ETH-Grid-Bot")
                             log(f"  ⚠️ Paused 1h due to {state['consecutive_loss']} consecutive losses")
                             save_state(state)
                             time.sleep(3600)
@@ -1180,12 +1149,12 @@ def main():
         # [Fix#12] Graded exception handling — don't swallow everything
         except (requests.exceptions.RequestException, ConnectionError) as e:  # [Fix#6] added `as e`
             log(f"Network error: {e}, retrying...")
-            telegram_notify(f"⚠️ Network error persists.\nLast error: {e}", "WARNING")
+            telegram_notify(f"⚠️ Network error persists.\nLast error: {e}", "WARNING", "ETH-Grid-Bot")
             time.sleep(CHECK_INTERVAL * 2)
             continue
         except ValueError as e:
             log(f"FATAL: Data validation error — {e}")
-            telegram_notify(f"🚨 FATAL ERROR — Bot exiting.\nError: {e}", "CRITICAL")
+            telegram_notify(f"🚨 FATAL ERROR — Bot exiting.\nError: {e}", "CRITICAL", "ETH-Grid-Bot")
             should_alert(state, "FATAL_ERROR", f"Data error: {e}")
             sys.exit(1)
         except Exception as e:

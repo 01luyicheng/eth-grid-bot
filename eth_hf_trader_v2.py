@@ -44,6 +44,7 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timezone
 from web3 import Web3
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, check_wallet_env_permissions
 
 warnings.filterwarnings('ignore')
 
@@ -55,10 +56,7 @@ STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
 LOG_FILE    = "/root/.openclaw/workspace/eth-grid-bot/data/eth_hf_v2.log"
 
 # --- Load wallet credentials (with file permission check) ---
-st = os.stat(WALLET_ENV)
-mode = st.st_mode & 0o777
-if mode != 0o600:
-    raise RuntimeError(f"wallet.env permissions {oct(mode)} are too open; must be 0o600")
+check_wallet_env_permissions(WALLET_ENV)
 
 PRIVATE_KEY = WALLET = None
 for line in open(WALLET_ENV):
@@ -131,37 +129,10 @@ acct = w3.eth.account.from_key(PRIVATE_KEY)
 _TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 _TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-HF-Trader-v2\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):  # nosec B310
-            pass
-    except Exception as e:
-        print(f"Telegram notify failed: {e}")  # handled silent failure
+# Telegram notification moved to shared_utils
 
 # === Heartbeat (health check) ===
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2"
-
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception as e:
-            print(f"Heartbeat writer failed: {e}")
-        time.sleep(60)
-
-def start_heartbeat():
-    t = threading.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
 
 def is_alive(max_age=180):
     """Return True if bot wrote a heartbeat within max_age seconds."""
@@ -178,12 +149,7 @@ def log(msg, level="INFO"):
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
     # Refresh heartbeat on any log activity
-    try:
-        os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
-        with open(_HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except Exception as e:
-        print(f"Log heartbeat update failed: {e}")
+    refresh_heartbeat(_HEARTBEAT_FILE)
 
 def rpc(method, params=None):
     r = session.post(RPC, json={
@@ -761,9 +727,9 @@ def main():
 
     mode = "LIVE" if args.live else "PAPER"
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2")
-    telegram_notify(f"🚀 HF Trader v2 started [{mode}]\nWallet: {WALLET}", "INFO")
+    telegram_notify(f"🚀 HF Trader v2 started [{mode}]\nWallet: {WALLET}", "INFO", "ETH-HF-Trader-v2")
     log(f"=== HF ETH Trader v2 STARTED [{mode}] ===")
     log(f"Wallet:         {WALLET}")
     log(f"Position size:  ${POSITION_SIZE_USD} / trade")
@@ -915,7 +881,7 @@ def main():
                     remaining = max(0, state.get("_loss_pause_until", 0) - now)
                     if remaining > 0:
                         log(f"⚠️ Consecutive loss pause: {remaining:.0f}s remaining — skipping signal", "WARN")
-                        telegram_notify(f"⚠️ HF-v2: {state['consecutive_loss']} consecutive losses. Paused {remaining:.0f}s.", "WARNING")
+                        telegram_notify(f"⚠️ HF-v2: {state['consecutive_loss']} consecutive losses. Paused {remaining:.0f}s.", "WARNING", "ETH-HF-Trader-v2")
                         time.sleep(min(remaining, 60))
                         continue
 
@@ -1007,13 +973,13 @@ def main():
                                     state["_loss_pause_until"] = now + 3600
                                     telegram_notify(
                                         f"⚠️ Loss #{state['consecutive_loss']}\nPrice: ${price:.4f}\nPnL: {pnl:+.4f}",
-                                        "WARNING"
+                                        "WARNING", "ETH-HF-Trader-v2"
                                     )
                                     if state["consecutive_loss"] >= 3:
                                         log(f"⚠️ {state['consecutive_loss']} consecutive losses — pausing 1h", "WARN")
                                         telegram_notify(
                                             f"🚨 {state['consecutive_loss']} consecutive losses. Pausing 1 hour.",
-                                            "WARNING"
+                                            "WARNING", "ETH-HF-Trader-v2"
                                         )
                                         time.sleep(3600)
                                         state["consecutive_loss"] = 0
@@ -1031,7 +997,7 @@ def main():
                                 log(f"  Swap failed (nonce consumed), consecutive_loss -> {state['consecutive_loss']}", "WARN")
                                 if state["consecutive_loss"] >= 3:
                                     log(f"⚠️ {state['consecutive_loss']} consecutive losses — pausing 1h", "WARN")
-                                    telegram_notify(f"🚨 HF-v2: {state['consecutive_loss']} consecutive losses. Pausing 1 hour.", "WARNING")
+                                    telegram_notify(f"🚨 HF-v2: {state['consecutive_loss']} consecutive losses. Pausing 1 hour.", "WARNING", "ETH-HF-Trader-v2")
                                     time.sleep(3600)
                                     state["consecutive_loss"] = 0
                                     state["_loss_pause_until"] = 0
