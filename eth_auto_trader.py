@@ -198,10 +198,10 @@ def telegram_notify(message, priority="INFO"):
     data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
     try:
         req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
+        with urllib.request.urlopen(req, timeout=10):  # nosec B310
             pass
-    except Exception:
-        pass  # silent failure
+    except Exception as e:
+        print(f"Telegram notify failed: {e}")  # handled silent failure
 
 # DeFi addresses (Base mainnet)
 WETH   = "0x4200000000000000000000000000000000000006"
@@ -225,7 +225,7 @@ _STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE  = os.path.join(_STATE_DIR, "trade_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE   = "/tmp/eth_trader.log"
+LOG_FILE   = os.path.join(_STATE_DIR, "eth_trader.log")
 
 session = requests.Session()
 session.proxies = {}  # direct
@@ -274,8 +274,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat writer failed: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -301,8 +301,8 @@ def log(msg):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Log heartbeat update failed: {e}")
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
@@ -805,7 +805,7 @@ def should_alert(state, key, msg, cooldown=14400):
 # === Main loop ===
 def main():
     # [Bug#2] Single-instance lock — prevents nonce conflicts from concurrent runs
-    LOCK_FILE = "/tmp/eth_trader.lock"
+    LOCK_FILE = os.path.join(_STATE_DIR, "eth_trader.lock")
     lock_f = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)

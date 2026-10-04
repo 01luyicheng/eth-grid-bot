@@ -34,10 +34,14 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+LOG_FILE      = os.path.join(_STATE_DIR, "eth_hf_trader.log")
+DATA_DIR      = os.path.join(_STATE_DIR, "eth_hf_data")
 
 # --- Load wallet credentials ---
+st = os.stat(WALLET_ENV)
+if stat.S_IMODE(st.st_mode) & 0o077:
+    raise RuntimeError(f"{WALLET_ENV} permissions are too open; must be 0o600")
+
 PRIVATE_KEY = WALLET = None
 for line in open(WALLET_ENV):
     line = line.strip()
@@ -100,10 +104,10 @@ def telegram_notify(message, priority="INFO"):
     data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
     try:
         req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
+        with urllib.request.urlopen(req, timeout=10):  # nosec B310
             pass
-    except Exception:
-        pass  # silent failure
+    except Exception as e:
+        print(f"Telegram notify failed: {e}")  # handled silent failure
 
 # ============================================================
 # SESSION & WEB3
@@ -127,8 +131,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat writer failed: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -153,8 +157,8 @@ def log(msg, level="INFO"):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Log heartbeat update failed: {e}")
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -336,8 +340,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Gate.io fast trade fetch failed: {e}")
     return None
 
 # ============================================================
