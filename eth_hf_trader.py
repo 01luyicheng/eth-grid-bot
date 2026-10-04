@@ -24,6 +24,7 @@ Usage:
 import eth_abi, requests, json, time, os, sys, argparse, threading, secrets, hmac as _hmac, hashlib, urllib.request, urllib.parse, stat
 from web3 import Web3
 from datetime import datetime, timezone
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, check_wallet_env_permissions, NonceManager, _exact_input_single
 
 # ============================================================
 # CONFIGURATION
@@ -34,10 +35,11 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+LOG_FILE      = os.path.join(_STATE_DIR, "eth_hf_trader.log")
+DATA_DIR      = os.path.join(_STATE_DIR, "eth_hf_data")
 
 # --- Load wallet credentials ---
+check_wallet_env_permissions(WALLET_ENV)
 PRIVATE_KEY = WALLET = None
 for line in open(WALLET_ENV):
     line = line.strip()
@@ -91,19 +93,7 @@ PRIORITY_FEE = 500_000_000  # 0.5 gwei fixed tip
 _TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 _TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-HF-Trader\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+# Telegram notification moved to shared_utils
 
 # ============================================================
 # SESSION & WEB3
@@ -118,22 +108,7 @@ acct     = w3.eth.account.from_key(PRIVATE_KEY)
 # ============================================================
 
 # === Heartbeat (health check) ===
-import threading as _heartbeat_thread
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf"
-
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
-        time.sleep(60)
-
-def start_heartbeat():
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
 
 def is_alive(max_age=180):
     """Return True if bot wrote a heartbeat within max_age seconds."""
@@ -150,11 +125,7 @@ def log(msg, level="INFO"):
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
     # Refresh heartbeat on any log activity
-    try:
-        with open(_HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except Exception:
-        pass
+    refresh_heartbeat(_HEARTBEAT_FILE)
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -180,35 +151,6 @@ def rpc(method, params=None):
 # NONCE MANAGER — prevents race condition on concurrent txs
 # (Critical fix #2)
 # ============================================================
-class NonceManager:
-    def __init__(self, rpc_fn, wallet):
-        self.rpc    = rpc_fn
-        self.wallet = wallet
-        self._nonce = None
-        self._lock  = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            if self._nonce is None:
-                self._nonce = int(
-                    self.rpc("eth_getTransactionCount", [self.wallet, "pending"])
-                    ["result"], 16
-                )
-            nonce = self._nonce
-            self._nonce += 1
-            return nonce
-
-    def confirm(self):
-        """Called after a transaction is confirmed on-chain."""
-        with self._lock:
-            pass  # nonce was pre-incremented on get(); nothing extra needed
-
-    def rollback(self):
-        """Called when a transaction fails — restore the pre-incremented nonce."""
-        with self._lock:
-            if self._nonce is not None and self._nonce > 0:
-                self._nonce -= 1
-
 nonce_mgr = NonceManager(rpc, WALLET)
 
 def get_gas_price():
@@ -336,8 +278,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Gate.io fast trade fetch failed: {e}")
     return None
 
 # ============================================================
@@ -364,19 +306,6 @@ def get_eth_price_cached():
 # ============================================================
 # ON-CHAIN TRADES
 # ============================================================
-def _exact_input_single(params):
-    selector = "414bf389"
-    encoded  = eth_abi.encode(
-        ['address','address','uint24','address','uint256','uint256','uint256','uint160'],
-        [
-            params["token_in"], params["token_out"], params["fee"],
-            params["recipient"], params["deadline"],
-            params["amount_in"], params["amount_out_min"],
-            params.get("sqrt_price_limit", 0),
-        ]
-    )
-    return selector + encoded.hex()
-
 def swap_usdc_for_weth(amount_usdc_wei, entry_price):
     """Buy WETH with USDC. Returns True on success."""
     amount_out_min = int(amount_usdc_wei / entry_price * (1 - SLIPPAGE))
@@ -669,7 +598,7 @@ def main():
     log(f"Max daily loss:${MAX_DAILY_LOSS_USD}")
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf")
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
 
     state = load_state()
 
@@ -689,7 +618,7 @@ def main():
     price = get_eth_price_cached()
     if price:
         log(f"Current ETH price: ${price:.2f}")
-        telegram_notify(f"🚀 HF Trader started\nPrice: ${price:.4f}\nPaper: {mode}", "INFO")
+        telegram_notify(f"🚀 HF Trader started\nPrice: ${price:.4f}\nPaper: {mode}", "INFO", "ETH-HF-Trader")
     else:
         log("WARNING: Could not fetch initial price", "WARN")
 
@@ -721,7 +650,7 @@ def main():
                 if state.get("position") and state["daily_pnl"] <= -MAX_DAILY_LOSS_USD:
                     pos = state["position"]
                     log(f"⚠️ Daily loss ${state['daily_pnl']:.4f} at limit, force-closing position...")
-                    telegram_notify(f"⚠️ Daily loss ${state['daily_pnl']:.4f} at limit.\nForce-closing position.", "WARNING")
+                    telegram_notify(f"⚠️ Daily loss ${state['daily_pnl']:.4f} at limit.\nForce-closing position.", "WARNING", "ETH-HF-Trader")
                     if not args.paper:
                         eth_bal = get_eth()
                         if eth_bal > 0.0001:
@@ -812,12 +741,12 @@ def main():
                                         "cost_usd": size_usd,
                                     }
                                     state["last_trade_ts"] = time.time()
-                                    telegram_notify(f"✅ LONG opened\nEntry: ${price:.4f}\nSize: ${size_usd:.2f}", "INFO")
+                                    telegram_notify(f"✅ LONG opened\nEntry: ${price:.4f}\nSize: ${size_usd:.2f}", "INFO", "ETH-HF-Trader")
 
                                     # Fix #4: consecutive_loss protection — pause after 3 losses
                                     if state.get("consecutive_loss", 0) >= 3:
                                         log(f"⚠️ {state['consecutive_loss']} consecutive losses, pausing 1 hour", "WARN")
-                                        telegram_notify(f"⚠️ {state['consecutive_loss']} consecutive losses.\nBot paused 1 hour.", "WARNING")
+                                        telegram_notify(f"⚠️ {state['consecutive_loss']} consecutive losses.\nBot paused 1 hour.", "WARNING", "ETH-HF-Trader")
                                         save_state(state)
                                         time.sleep(3600)
                                         state["consecutive_loss"] = 0
@@ -881,7 +810,7 @@ def main():
                                 else:
                                     state["consecutive_loss"] = 0
                                 log(f"  ✅ Sell filled! PnL: {pnl:+.4f} | Total today: {state['daily_pnl']:+.4f}")
-                                telegram_notify(f"📤 LONG closed\nPnL: ${pnl:.4f}\nTotal today: ${state.get('daily_pnl', 0):.4f}", "INFO")
+                                telegram_notify(f"📤 LONG closed\nPnL: ${pnl:.4f}\nTotal today: ${state.get('daily_pnl', 0):.4f}", "INFO", "ETH-HF-Trader")
                             else:
                                 # swap failed: nonce consumed by swap_weth_for_usdc; do NOT rollback
                                 # (swap_weth_for_usdc handles its own rollback semantics)
@@ -893,7 +822,7 @@ def main():
             import traceback
             tb = traceback.format_exc()
             log(f"Loop error: {tb[:300]}", "ERROR")
-            telegram_notify(f"🚨 FATAL ERROR — HF Trader exiting.\nError: {e}", "CRITICAL")
+            telegram_notify(f"🚨 FATAL ERROR — HF Trader exiting.\nError: {e}", "CRITICAL", "ETH-HF-Trader")
             time.sleep(5)
 
         time.sleep(CHECK_INTERVAL)

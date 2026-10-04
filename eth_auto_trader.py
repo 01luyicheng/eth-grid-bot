@@ -22,6 +22,7 @@ BUG FIXES APPLIED (2026-06-18):
 """
 import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading, urllib.request, urllib.parse
 from web3 import Web3
+from shared_utils import telegram_notify, start_heartbeat, refresh_heartbeat, NonceManager, _exact_input_single
 
 # === wallet.env path ===
 _WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
@@ -189,19 +190,7 @@ PROXY = ""  # no proxy
 _TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 _TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-Grid-Bot\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+# Telegram notification moved to shared_utils
 
 # DeFi addresses (Base mainnet)
 WETH   = "0x4200000000000000000000000000000000000006"
@@ -225,63 +214,15 @@ _STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE  = os.path.join(_STATE_DIR, "trade_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE   = "/tmp/eth_trader.log"
+LOG_FILE   = os.path.join(_STATE_DIR, "eth_trader.log")
 
 session = requests.Session()
 session.proxies = {}  # direct
 w3 = Web3()
 acct = w3.eth.account.from_key(PRIVATE_KEY)
 
-# [Fix#10] NonceManager — prevents race condition on concurrent txs
-class NonceManager:
-    def __init__(self, rpc_fn, wallet):
-        self.rpc    = rpc_fn
-        self.wallet = wallet
-        self._nonce = None
-        self._lock  = threading.Lock()
-
-    def get(self):
-        with self._lock:
-            if self._nonce is None:
-                self._nonce = int(
-                    self.rpc("eth_getTransactionCount", [self.wallet, "pending"])
-                    ["result"], 16
-                )
-            nonce = self._nonce
-            self._nonce += 1
-            return nonce
-
-    def confirm(self):
-        """Called after a transaction is confirmed on-chain."""
-        with self._lock:
-            pass  # nonce was pre-incremented on get(); nothing extra needed
-
-    def rollback(self):
-        """Called when a transaction fails — restore the pre-incremented nonce."""
-        with self._lock:
-            if self._nonce is not None and self._nonce > 0:
-                self._nonce -= 1
-
-nonce_mgr = NonceManager(RPC, WALLET)
-
 # === Heartbeat (health check) ===
-import threading as _heartbeat_thread
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto"
-
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
-        time.sleep(60)
-
-def start_heartbeat():
-
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
 
 def is_alive(max_age=180):
     """Return True if bot wrote a heartbeat within max_age seconds."""
@@ -298,11 +239,7 @@ def log(msg):
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
     # Refresh heartbeat on any log activity
-    try:
-        with open(_HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except Exception:
-        pass
+    refresh_heartbeat(_HEARTBEAT_FILE)
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
@@ -320,6 +257,9 @@ def rpc(method, params=None):
 
 def get_nonce():
     return int(rpc("eth_getTransactionCount", [WALLET, "pending"])["result"], 16)
+
+# [Fix#10] NonceManager — prevents race condition on concurrent txs
+nonce_mgr = NonceManager(rpc_with_retry, WALLET)
 
 def get_max_fee():
     """EIP-1559: maxFeePerGas = (baseFee * 2) + priorityFee.
@@ -598,27 +538,6 @@ def compute_grid_levels(center_price, range_pct, tiers):
     ])
     return buy_levels, sell_levels
 
-def _exact_input_single(params):
-    """
-    Uniswap V3 exactInputSingle with flat ABI encoding.
-    selector = 0x414bf389
-    """
-    selector = "414bf389"
-    encoded = eth_abi.encode(
-        ['address','address','uint24','address','uint256','uint256','uint256','uint160'],
-        [
-            params["token_in"],
-            params["token_out"],
-            params["fee"],
-            params["recipient"],
-            params["deadline"],
-            params["amount_in"],
-            params["amount_out_min"],
-            params.get("sqrt_price_limit", 0),
-        ]
-    )
-    return selector + encoded.hex()
-
 def swap_weth_for_usdc(amount_wei, price, state=None):
     """Sell WETH → USDC with slippage protection"""
     amount_out_min = int(amount_wei * price * (1 - SLIPPAGE))
@@ -805,7 +724,7 @@ def should_alert(state, key, msg, cooldown=14400):
 # === Main loop ===
 def main():
     # [Bug#2] Single-instance lock — prevents nonce conflicts from concurrent runs
-    LOCK_FILE = "/tmp/eth_trader.lock"
+    LOCK_FILE = os.path.join(_STATE_DIR, "eth_trader.lock")
     lock_f = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -823,7 +742,7 @@ def main():
         f"DynSL-ATR-mult: {DYNAMIC_STOP_LOSS_ATR_MULT}")
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto")
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
 
     state = load_state()
 
@@ -840,7 +759,7 @@ def main():
 
     BUY_LEVELS, SELL_LEVELS = compute_grid_levels(grid_center, GRID_RANGE_PCT, GRID_TIERS)
     # Notify Telegram after grid is computed
-    telegram_notify(f"🚀 ETH Grid Bot started\nPrice: ${init_price:.2f}\nGrid: {BUY_LEVELS[0]:.0f}~{SELL_LEVELS[-1]:.0f}", "INFO")
+    telegram_notify(f"🚀 ETH Grid Bot started\nPrice: ${init_price:.2f}\nGrid: {BUY_LEVELS[0]:.0f}~{SELL_LEVELS[-1]:.0f}", "INFO", "ETH-Grid-Bot")
 
 
     # Compute dynamic STOP_LOSS from grid bottom
@@ -998,7 +917,7 @@ def main():
                     save_state(state)
                     ok = liquidate_all(price, state=state)
                     if ok:
-                        telegram_notify(f"🛑 STOP LOSS triggered!\nPrice: ${price:.2f}\nAll grids reset.", "CRITICAL")
+                        telegram_notify(f"🛑 STOP LOSS triggered!\nPrice: ${price:.2f}\nAll grids reset.", "CRITICAL", "ETH-Grid-Bot")
                         state["pending_stop_loss"] = False
                         state["trail_armed"] = False
                         state["trail_peak"] = None
@@ -1086,7 +1005,7 @@ def main():
                         trail_peak = state["trail_peak"]
                         ok = liquidate_all(price, state=state)
                         if ok:
-                            telegram_notify(f"📉 TRAILING STOP triggered!\nPeak: ${trail_peak:.2f}\nProfit protected.", "WARNING")
+                            telegram_notify(f"📉 TRAILING STOP triggered!\nPeak: ${trail_peak:.2f}\nProfit protected.", "WARNING", "ETH-Grid-Bot")
                             state["trail_armed"] = False
                             state["trail_peak"] = None
                             state["trail_triggered"] = True  # [Fix#6] Mark trail as triggered
@@ -1138,7 +1057,7 @@ def main():
                         # [Fix#11] Track consecutive losses
                         state["consecutive_loss"] = state.get("consecutive_loss", 0) + 1
                         if state["consecutive_loss"] >= CONSECUTIVE_LOSS_PAUSE:
-                            telegram_notify(f"⚠️ {state['consecutive_loss']} consecutive losses.\nBot paused 1 hour.", "WARNING")
+                            telegram_notify(f"⚠️ {state['consecutive_loss']} consecutive losses.\nBot paused 1 hour.", "WARNING", "ETH-Grid-Bot")
                             log(f"  ⚠️ Paused 1h due to {state['consecutive_loss']} consecutive losses")
                             save_state(state)
                             time.sleep(3600)
@@ -1180,12 +1099,12 @@ def main():
         # [Fix#12] Graded exception handling — don't swallow everything
         except (requests.exceptions.RequestException, ConnectionError) as e:  # [Fix#6] added `as e`
             log(f"Network error: {e}, retrying...")
-            telegram_notify(f"⚠️ Network error persists.\nLast error: {e}", "WARNING")
+            telegram_notify(f"⚠️ Network error persists.\nLast error: {e}", "WARNING", "ETH-Grid-Bot")
             time.sleep(CHECK_INTERVAL * 2)
             continue
         except ValueError as e:
             log(f"FATAL: Data validation error — {e}")
-            telegram_notify(f"🚨 FATAL ERROR — Bot exiting.\nError: {e}", "CRITICAL")
+            telegram_notify(f"🚨 FATAL ERROR — Bot exiting.\nError: {e}", "CRITICAL", "ETH-Grid-Bot")
             should_alert(state, "FATAL_ERROR", f"Data error: {e}")
             sys.exit(1)
         except Exception as e:
