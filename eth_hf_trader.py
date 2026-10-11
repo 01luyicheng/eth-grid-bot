@@ -34,8 +34,10 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+_LOCAL_DATA_DIR = "./data"
+os.makedirs(_LOCAL_DATA_DIR, exist_ok=True)
+LOG_FILE      = os.path.join(_LOCAL_DATA_DIR, "eth_hf_trader.log")
+DATA_DIR      = os.path.join(_LOCAL_DATA_DIR, "eth_hf_data")
 
 # --- Load wallet credentials ---
 PRIVATE_KEY = WALLET = None
@@ -97,13 +99,11 @@ def telegram_notify(message, priority="INFO"):
         return
     text = f"[{priority}] ETH-HF-Trader\n{message}"
     url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
+    payload = {"chat_id": _TELEGRAM_CHAT_ID, "text": text}
     try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print(f"Telegram notify failed: {e}")
 
 # ============================================================
 # SESSION & WEB3
@@ -127,8 +127,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat write error: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -140,7 +140,8 @@ def is_alive(max_age=180):
     try:
         with open(_HEARTBEAT_FILE) as f:
             return time.time() - float(f.read().strip()) < max_age
-    except Exception:
+    except Exception as e:
+        print(f"Heartbeat read error: {e}")
         return False
 
 def log(msg, level="INFO"):
@@ -153,8 +154,8 @@ def log(msg, level="INFO"):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Log heartbeat write error: {e}")
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -336,8 +337,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Gate trades price fetch error: {e}")
     return None
 
 # ============================================================

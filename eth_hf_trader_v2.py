@@ -52,7 +52,10 @@ warnings.filterwarnings('ignore')
 # ============================================================
 WALLET_ENV  = "/root/.openclaw/workspace/wallet/wallet.env"
 STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
-LOG_FILE    = "/tmp/eth_hf_v2.log"
+
+_LOCAL_DATA_DIR = "./data"
+os.makedirs(_LOCAL_DATA_DIR, exist_ok=True)
+LOG_FILE    = os.path.join(_LOCAL_DATA_DIR, "eth_hf_v2.log")
 
 # --- Load wallet credentials (with file permission check) ---
 st = os.stat(WALLET_ENV)
@@ -137,13 +140,11 @@ def telegram_notify(message, priority="INFO"):
         return
     text = f"[{priority}] ETH-HF-Trader-v2\n{message}"
     url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
+    payload = {"chat_id": _TELEGRAM_CHAT_ID, "text": text}
     try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+        requests.post(url, data=payload, timeout=10)
+    except Exception as e:
+        print(f"Telegram notify failed: {e}")
 
 # === Heartbeat (health check) ===
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2"
@@ -155,8 +156,8 @@ def _heartbeat_writer():
             os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Heartbeat write error: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -168,7 +169,8 @@ def is_alive(max_age=180):
     try:
         with open(_HEARTBEAT_FILE) as f:
             return time.time() - float(f.read().strip()) < max_age
-    except Exception:
+    except Exception as e:
+        print(f"Heartbeat read error: {e}")
         return False
 
 def log(msg, level="INFO"):
@@ -182,8 +184,8 @@ def log(msg, level="INFO"):
         os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Log heartbeat write error: {e}")
 
 def rpc(method, params=None):
     r = session.post(RPC, json={
