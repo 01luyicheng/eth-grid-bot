@@ -156,8 +156,8 @@ def _heartbeat_writer():
             os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception as e:
-            print(f"Heartbeat write error: {e}")
+        except Exception:
+            pass
         time.sleep(60)
 
 def start_heartbeat():
@@ -169,8 +169,7 @@ def is_alive(max_age=180):
     try:
         with open(_HEARTBEAT_FILE) as f:
             return time.time() - float(f.read().strip()) < max_age
-    except Exception as e:
-        print(f"Heartbeat read error: {e}")
+    except Exception:
         return False
 
 def log(msg, level="INFO"):
@@ -184,8 +183,8 @@ def log(msg, level="INFO"):
         os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception as e:
-        print(f"Log heartbeat write error: {e}")
+    except Exception:
+        pass
 
 def rpc(method, params=None):
     r = session.post(RPC, json={

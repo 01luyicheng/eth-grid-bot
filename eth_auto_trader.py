@@ -274,8 +274,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception as e:
-            print(f"Heartbeat write error: {e}")
+        except Exception:
+            pass
         time.sleep(60)
 
 def start_heartbeat():
@@ -288,8 +288,7 @@ def is_alive(max_age=180):
     try:
         with open(_HEARTBEAT_FILE) as f:
             return time.time() - float(f.read().strip()) < max_age
-    except Exception as e:
-        print(f"Heartbeat read error: {e}")
+    except Exception:
         return False
 
 def log(msg):
@@ -302,8 +301,8 @@ def log(msg):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception as e:
-        print(f"Log heartbeat write error: {e}")
+    except Exception:
+        pass
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):

@@ -127,8 +127,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception as e:
-            print(f"Heartbeat write error: {e}")
+        except Exception:
+            pass
         time.sleep(60)
 
 def start_heartbeat():
@@ -140,8 +140,7 @@ def is_alive(max_age=180):
     try:
         with open(_HEARTBEAT_FILE) as f:
             return time.time() - float(f.read().strip()) < max_age
-    except Exception as e:
-        print(f"Heartbeat read error: {e}")
+    except Exception:
         return False
 
 def log(msg, level="INFO"):
@@ -154,8 +153,8 @@ def log(msg, level="INFO"):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception as e:
-        print(f"Log heartbeat write error: {e}")
+    except Exception:
+        pass
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -337,8 +336,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception as e:
-        print(f"Gate trades price fetch error: {e}")
+    except Exception:
+        pass
     return None
 
 # ============================================================
