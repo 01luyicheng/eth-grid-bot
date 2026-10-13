@@ -51,8 +51,9 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ============================================================
 WALLET_ENV  = "/root/.openclaw/workspace/wallet/wallet.env"
-STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
-LOG_FILE    = "/tmp/eth_hf_v2.log"
+_STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
+STATE_FILE  = os.path.join(_STATE_DIR, "hf_state.json")
+LOG_FILE    = os.path.join(_STATE_DIR, "eth_hf_v2.log")
 
 # --- Load wallet credentials (with file permission check) ---
 st = os.stat(WALLET_ENV)
