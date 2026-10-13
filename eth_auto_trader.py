@@ -225,7 +225,7 @@ _STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE  = os.path.join(_STATE_DIR, "trade_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE   = "/tmp/eth_trader.log"
+LOG_FILE   = os.path.join(_STATE_DIR, "eth_trader.log")
 
 session = requests.Session()
 session.proxies = {}  # direct
@@ -805,7 +805,7 @@ def should_alert(state, key, msg, cooldown=14400):
 # === Main loop ===
 def main():
     # [Bug#2] Single-instance lock — prevents nonce conflicts from concurrent runs
-    LOCK_FILE = "/tmp/eth_trader.lock"
+    LOCK_FILE = os.path.join(_STATE_DIR, "eth_trader.lock")
     lock_f = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)

@@ -34,8 +34,8 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+LOG_FILE      = os.path.join(_STATE_DIR, "eth_hf_trader.log")
+DATA_DIR      = os.path.join(_STATE_DIR, "eth_hf_data")
 
 # --- Load wallet credentials ---
 PRIVATE_KEY = WALLET = None
