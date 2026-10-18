@@ -18,7 +18,7 @@ logs/
 # State files
 state.json
 eth_trade_state.json
-/tmp/eth_trade_state.json
+# state files
 # Persistent state directory (survives reboots)
 data/
 
