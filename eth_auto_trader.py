@@ -22,7 +22,7 @@ BUG FIXES APPLIED (2026-06-18):
 """
 import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading
 from web3 import Web3
-from bot_utils import telegram_notify
+from bot_utils import telegram_notify, write_heartbeat, check_is_alive, write_log
 
 # === wallet.env path ===
 _WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
@@ -256,38 +256,18 @@ _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto"
 def _heartbeat_writer():
     """Write heartbeat timestamp every 60 seconds."""
     while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception as e:
-            print(f"Failed to write heartbeat: {e}")
+        write_heartbeat(_HEARTBEAT_FILE)
         time.sleep(60)
 
 def start_heartbeat():
-
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
+    t = threading.Thread(target=_heartbeat_writer, daemon=True)
     t.start()
 
 def is_alive(max_age=180):
-    """Return True if bot wrote a heartbeat within max_age seconds."""
-    try:
-        with open(_HEARTBEAT_FILE) as f:
-            return time.time() - float(f.read().strip()) < max_age
-    except Exception:
-        return False
+    return check_is_alive(_HEARTBEAT_FILE, max_age)
 
 def log(msg):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}"
-    print(line)
-    with open(LOG_FILE, "a") as f:
-        f.write(line + "\n")
-    # Refresh heartbeat on any log activity
-    try:
-        with open(_HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except Exception as e:
-        print(f"Failed to update heartbeat on log: {e}")
+    write_log(msg, LOG_FILE, _HEARTBEAT_FILE)
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
