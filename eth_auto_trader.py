@@ -20,8 +20,9 @@ BUG FIXES APPLIED (2026-06-18):
   [Issue#7] BUY/SELL_LEVELS, SWAP_AMOUNT_WETH, TRADE_COOLDOWN now read from wallet.env
             with sensible defaults as fallback.
 """
-import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading, urllib.request, urllib.parse
+import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading
 from web3 import Web3
+from bot_utils import telegram_notify
 
 # === wallet.env path ===
 _WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
@@ -185,23 +186,7 @@ PRIORITY_FEE = 500_000_000  # 0.5 gwei — fixed tip for EIP-1559
 RPC = "https://mainnet.base.org"
 PROXY = ""  # no proxy
 
-# === Telegram Alerts ===
-_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-Grid-Bot\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+# Telegram alerts have been moved to bot_utils.py
 
 # DeFi addresses (Base mainnet)
 WETH   = "0x4200000000000000000000000000000000000006"
@@ -225,7 +210,7 @@ _STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE  = os.path.join(_STATE_DIR, "trade_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE   = "/tmp/eth_trader.log"
+LOG_FILE   = os.path.join(_STATE_DIR, "eth_trader.log")
 
 session = requests.Session()
 session.proxies = {}  # direct
@@ -274,8 +259,8 @@ def _heartbeat_writer():
         try:
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Failed to write heartbeat: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -301,8 +286,8 @@ def log(msg):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Failed to update heartbeat on log: {e}")
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
@@ -805,7 +790,7 @@ def should_alert(state, key, msg, cooldown=14400):
 # === Main loop ===
 def main():
     # [Bug#2] Single-instance lock — prevents nonce conflicts from concurrent runs
-    LOCK_FILE = "/tmp/eth_trader.lock"
+    LOCK_FILE = os.path.join(_STATE_DIR, "eth_trader.lock")
     lock_f = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)

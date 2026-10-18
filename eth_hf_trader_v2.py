@@ -40,10 +40,9 @@ import statistics
 import warnings
 import threading
 import secrets
-import urllib.request
-import urllib.parse
 from datetime import datetime, timezone
 from web3 import Web3
+from bot_utils import telegram_notify
 
 warnings.filterwarnings('ignore')
 
@@ -51,8 +50,9 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ============================================================
 WALLET_ENV  = "/root/.openclaw/workspace/wallet/wallet.env"
-STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
-LOG_FILE    = "/tmp/eth_hf_v2.log"
+_STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
+STATE_FILE  = os.path.join(_STATE_DIR, "hf_state.json")
+LOG_FILE    = os.path.join(_STATE_DIR, "eth_hf_v2.log")
 
 # --- Load wallet credentials (with file permission check) ---
 st = os.stat(WALLET_ENV)
@@ -127,23 +127,7 @@ acct = w3.eth.account.from_key(PRIVATE_KEY)
 # HELPERS
 # ============================================================
 
-# === Telegram Alerts ===
-_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-HF-Trader-v2\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+# Telegram alerts have been moved to bot_utils.py
 
 # === Heartbeat (health check) ===
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2"
@@ -155,8 +139,8 @@ def _heartbeat_writer():
             os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
             with open(_HEARTBEAT_FILE, "w") as f:
                 f.write(str(time.time()))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Failed to write heartbeat: {e}")
         time.sleep(60)
 
 def start_heartbeat():
@@ -182,8 +166,8 @@ def log(msg, level="INFO"):
         os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Failed to update heartbeat on log: {e}")
 
 def rpc(method, params=None):
     r = session.post(RPC, json={
