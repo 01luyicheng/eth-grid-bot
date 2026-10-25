@@ -20,8 +20,9 @@ BUG FIXES APPLIED (2026-06-18):
   [Issue#7] BUY/SELL_LEVELS, SWAP_AMOUNT_WETH, TRADE_COOLDOWN now read from wallet.env
             with sensible defaults as fallback.
 """
-import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading, urllib.request, urllib.parse
+import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, secrets, stat, threading
 from web3 import Web3
+from bot_utils import telegram_notify, start_heartbeat, is_alive
 
 # === wallet.env path ===
 _WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
@@ -185,24 +186,6 @@ PRIORITY_FEE = 500_000_000  # 0.5 gwei — fixed tip for EIP-1559
 RPC = "https://mainnet.base.org"
 PROXY = ""  # no proxy
 
-# === Telegram Alerts ===
-_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-Grid-Bot\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
-
 # DeFi addresses (Base mainnet)
 WETH   = "0x4200000000000000000000000000000000000006"
 USDC   = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -225,7 +208,7 @@ _STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE  = os.path.join(_STATE_DIR, "trade_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE   = "/tmp/eth_trader.log"
+LOG_FILE   = os.path.join(_STATE_DIR, "eth_trader.log")
 
 session = requests.Session()
 session.proxies = {}  # direct
@@ -265,31 +248,7 @@ class NonceManager:
 nonce_mgr = NonceManager(RPC, WALLET)
 
 # === Heartbeat (health check) ===
-import threading as _heartbeat_thread
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto"
-
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
-        time.sleep(60)
-
-def start_heartbeat():
-
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
-
-def is_alive(max_age=180):
-    """Return True if bot wrote a heartbeat within max_age seconds."""
-    try:
-        with open(_HEARTBEAT_FILE) as f:
-            return time.time() - float(f.read().strip()) < max_age
-    except Exception:
-        return False
 
 def log(msg):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -301,8 +260,8 @@ def log(msg):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error writing heartbeat in log: {e}")
 
 def rpc_with_retry(method, params=None, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
@@ -331,7 +290,8 @@ def get_max_fee():
         pri_fee_raw = rpc("eth_maxPriorityFeePerGas", [])
         priority_fee = int(pri_fee_raw["result"], 16) if pri_fee_raw else PRIORITY_FEE
         return base_fee * 2 + priority_fee
-    except Exception:
+    except Exception as e:
+        log(f"Error in get_max_fee: {e}")
         # Fallback: use eth_gasPrice + 20% buffer
         raw = int(rpc("eth_gasPrice")["result"], 16)
         return int(raw * 1.2)
@@ -805,7 +765,7 @@ def should_alert(state, key, msg, cooldown=14400):
 # === Main loop ===
 def main():
     # [Bug#2] Single-instance lock — prevents nonce conflicts from concurrent runs
-    LOCK_FILE = "/tmp/eth_trader.lock"
+    LOCK_FILE = os.path.join(_STATE_DIR, "eth_trader.lock")
     lock_f = open(LOCK_FILE, "w")
     try:
         fcntl.flock(lock_f, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -823,7 +783,7 @@ def main():
         f"DynSL-ATR-mult: {DYNAMIC_STOP_LOSS_ATR_MULT}")
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_auto")
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
 
     state = load_state()
 

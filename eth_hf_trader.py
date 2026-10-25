@@ -21,8 +21,9 @@ Usage:
   --verbose: extra debug logging
 """
 
-import eth_abi, requests, json, time, os, sys, argparse, threading, secrets, hmac as _hmac, hashlib, urllib.request, urllib.parse, stat
+import eth_abi, requests, json, time, os, sys, argparse, threading, secrets, hmac as _hmac, hashlib, stat
 from web3 import Web3
+from bot_utils import telegram_notify, start_heartbeat, is_alive
 from datetime import datetime, timezone
 
 # ============================================================
@@ -34,8 +35,8 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+LOG_FILE      = os.path.join(_STATE_DIR, "eth_hf_trader.log")
+DATA_DIR      = os.path.join(_STATE_DIR, "eth_hf_data")
 
 # --- Load wallet credentials ---
 PRIVATE_KEY = WALLET = None
@@ -87,24 +88,6 @@ DAILY_RESET_HOUR_UTC = 0      # reset counters at midnight UTC
 # --- Gas ---
 PRIORITY_FEE = 500_000_000  # 0.5 gwei fixed tip
 
-# === Telegram Alerts ===
-_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-HF-Trader\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
-
 # ============================================================
 # SESSION & WEB3
 # ============================================================
@@ -118,30 +101,8 @@ acct     = w3.eth.account.from_key(PRIVATE_KEY)
 # ============================================================
 
 # === Heartbeat (health check) ===
-import threading as _heartbeat_thread
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf"
 
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
-        time.sleep(60)
-
-def start_heartbeat():
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
-
-def is_alive(max_age=180):
-    """Return True if bot wrote a heartbeat within max_age seconds."""
-    try:
-        with open(_HEARTBEAT_FILE) as f:
-            return time.time() - float(f.read().strip()) < max_age
-    except Exception:
-        return False
 
 def log(msg, level="INFO"):
     ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -153,8 +114,8 @@ def log(msg, level="INFO"):
     try:
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error writing heartbeat in log: {e}")
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -336,8 +297,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"Price fetch error (Gate.io trades): {e}", "WARN")
     return None
 
 # ============================================================
@@ -467,12 +428,12 @@ try:
             raise RuntimeError(f"{_HMAC_KEY_FILE} permissions too open: must be 0o600")
     else:
         raise FileNotFoundError("HMAC key file not found")
-except Exception:
+except Exception as e:
     _HF_HMAC_KEY = secrets.token_bytes(32)
     with open(_HMAC_KEY_FILE, "wb") as f:
         f.write(_HF_HMAC_KEY)
     os.chmod(_HMAC_KEY_FILE, 0o600)
-    log(f"[WARN] HMAC key regenerated (file missing or corrupt)", "WARN")
+    log(f"[WARN] HMAC key regenerated (file missing or corrupt): {e}", "WARN")
 
 def _hf_state_sign(data):
     return _hmac.new(
@@ -669,7 +630,7 @@ def main():
     log(f"Max daily loss:${MAX_DAILY_LOSS_USD}")
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf")
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
 
     state = load_state()
 
