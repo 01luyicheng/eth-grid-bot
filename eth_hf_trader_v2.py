@@ -40,10 +40,9 @@ import statistics
 import warnings
 import threading
 import secrets
-import urllib.request
-import urllib.parse
 from datetime import datetime, timezone
 from web3 import Web3
+from bot_utils import telegram_notify, start_heartbeat, is_alive
 
 warnings.filterwarnings('ignore')
 
@@ -51,8 +50,9 @@ warnings.filterwarnings('ignore')
 # CONFIGURATION
 # ============================================================
 WALLET_ENV  = "/root/.openclaw/workspace/wallet/wallet.env"
-STATE_FILE  = "/root/.openclaw/workspace/eth-grid-bot/data/hf_state.json"
-LOG_FILE    = "/tmp/eth_hf_v2.log"
+_STATE_DIR  = "/root/.openclaw/workspace/eth-grid-bot/data"
+STATE_FILE  = os.path.join(_STATE_DIR, "hf_state.json")
+LOG_FILE    = os.path.join(_STATE_DIR, "eth_hf_v2.log")
 
 # --- Load wallet credentials (with file permission check) ---
 st = os.stat(WALLET_ENV)
@@ -127,49 +127,8 @@ acct = w3.eth.account.from_key(PRIVATE_KEY)
 # HELPERS
 # ============================================================
 
-# === Telegram Alerts ===
-_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-HF-Trader-v2\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
-
 # === Heartbeat (health check) ===
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2"
-
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
-        time.sleep(60)
-
-def start_heartbeat():
-    t = threading.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
-
-def is_alive(max_age=180):
-    """Return True if bot wrote a heartbeat within max_age seconds."""
-    try:
-        with open(_HEARTBEAT_FILE) as f:
-            return time.time() - float(f.read().strip()) < max_age
-    except Exception:
-        return False
 
 def log(msg, level="INFO"):
     ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -182,8 +141,8 @@ def log(msg, level="INFO"):
         os.makedirs(os.path.dirname(_HEARTBEAT_FILE), exist_ok=True)
         with open(_HEARTBEAT_FILE, "w") as f:
             f.write(str(time.time()))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Error writing heartbeat in log: {e}")
 
 def rpc(method, params=None):
     r = session.post(RPC, json={
@@ -236,12 +195,12 @@ try:
             raise ValueError(f"HMAC key too short ({len(_STATE_HMAC_KEY)} bytes)")
     else:
         raise FileNotFoundError("HMAC key file not found")
-except Exception:
+except Exception as e:
     _STATE_HMAC_KEY = secrets.token_bytes(32)
     with open(_STATE_HMAC_KEY_FILE, "wb") as f:
         f.write(_STATE_HMAC_KEY)
     os.chmod(_STATE_HMAC_KEY_FILE, 0o600)
-    log(f"[WARN] HMAC key generated (file was missing)", "WARN")
+    log(f"[WARN] HMAC key generated (file was missing): {e}", "WARN")
 
 def _state_sign(data):
     return _hmac.new(
@@ -264,7 +223,8 @@ def estimate_gas_cost_usd(eth_price=1700):
         gas_price_wei = int(rpc("eth_gasPrice")["result"], 16)
         gas_eth = 200_000 * gas_price_wei / 1e18
         return gas_eth * eth_price
-    except Exception:
+    except Exception as e:
+        log(f"Error estimating gas cost: {e}", "WARN")
         return 0.05  # conservative
 
 def estimate_gas_roundtrip(eth_price=1700):
@@ -761,7 +721,7 @@ def main():
 
     mode = "LIVE" if args.live else "PAPER"
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf_v2")
     telegram_notify(f"🚀 HF Trader v2 started [{mode}]\nWallet: {WALLET}", "INFO")
     log(f"=== HF ETH Trader v2 STARTED [{mode}] ===")
