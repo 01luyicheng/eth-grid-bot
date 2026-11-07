@@ -34,12 +34,20 @@ pip install web3 eth_abi requests
 cp wallet.env.example wallet.env
 # 编辑 wallet.env，填入你的私钥
 nano wallet.env
+# 程序会拒绝权限过宽的配置文件
+chmod 600 wallet.env
+```
+
+程序默认读取 `/root/.openclaw/workspace/wallet/wallet.env`（原部署环境路径）。换机器时用 `WALLET_ENV` 指向你的配置文件即可：
+
+```bash
+export WALLET_ENV=$PWD/wallet.env
 ```
 
 ### 3. 运行
 
 ```bash
-python3 eth_auto_trader.py
+WALLET_ENV=./wallet.env python3 eth_auto_trader.py
 ```
 
 ---

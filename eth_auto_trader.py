@@ -24,7 +24,10 @@ import eth_abi, requests, json, time, os, signal, sys, fcntl, hmac, hashlib, sec
 from web3 import Web3
 
 # === wallet.env path ===
-_WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
+# 默认沿用服务器上的部署路径；换机器时用 WALLET_ENV 环境变量覆盖，
+# 例如 WALLET_ENV=./wallet.env python3 eth_auto_trader.py
+_DEFAULT_WALLET_ENV = "/root/.openclaw/workspace/wallet/wallet.env"
+_WALLET_ENV = os.environ.get("WALLET_ENV") or _DEFAULT_WALLET_ENV
 
 # === Trading params (loaded from wallet.env, defaults as fallback) ===
 # Defaults used when wallet.env doesn't specify the key
@@ -40,9 +43,19 @@ GRID_TIERS_DEFAULT           = 5
 STOP_LOSS_BUFFER_PCT_DEFAULT = 5   # 网格下沿下方 5%
 
 # [Fix#2] Check file permissions BEFORE reading private key
+if not os.path.exists(_WALLET_ENV):
+    raise SystemExit(
+        f"找不到 wallet 配置: {_WALLET_ENV}\n"
+        "请先把 wallet.env.example 复制成 wallet.env 并填好私钥，再用 WALLET_ENV 指向它:\n"
+        "  cp wallet.env.example wallet.env && chmod 600 wallet.env\n"
+        "  WALLET_ENV=./wallet.env python3 eth_auto_trader.py"
+    )
 st = os.stat(_WALLET_ENV)
 if stat.S_IMODE(st.st_mode) & 0o077:
-    raise RuntimeError(f"{_WALLET_ENV} must be 0o600, found {oct(st.st_mode)}")
+    raise SystemExit(
+        f"wallet 配置权限过宽: {_WALLET_ENV} 必须是 0o600，当前为 {oct(stat.S_IMODE(st.st_mode))}\n"
+        f"请执行: chmod 600 {_WALLET_ENV}"
+    )
 
 # Load from wallet.env (overrides defaults when present)
 for line in open(_WALLET_ENV):
