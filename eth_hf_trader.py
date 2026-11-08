@@ -34,8 +34,8 @@ _STATE_DIR    = "/root/.openclaw/workspace/eth-grid-bot/data"
 STATE_FILE    = os.path.join(_STATE_DIR, "hf_state.json")
 os.makedirs(_STATE_DIR, exist_ok=True)
 
-LOG_FILE      = "/tmp/eth_hf_trader.log"
-DATA_DIR      = "/tmp/eth_hf_data"
+LOG_FILE      = os.path.join(_STATE_DIR, "eth_hf_trader.log")
+DATA_DIR      = os.path.join(_STATE_DIR, "eth_hf_data")
 
 # --- Load wallet credentials ---
 PRIVATE_KEY = WALLET = None
@@ -88,22 +88,10 @@ DAILY_RESET_HOUR_UTC = 0      # reset counters at midnight UTC
 PRIORITY_FEE = 500_000_000  # 0.5 gwei fixed tip
 
 # === Telegram Alerts ===
-_TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-_TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+from bot_utils import telegram_notify as _telegram_notify, start_heartbeat, is_alive, setup_logger
 
 def telegram_notify(message, priority="INFO"):
-    """Send alert via Telegram Bot. Silent failure if not configured."""
-    if not _TELEGRAM_BOT_TOKEN or not _TELEGRAM_CHAT_ID:
-        return
-    text = f"[{priority}] ETH-HF-Trader\n{message}"
-    url  = f"https://api.telegram.org/bot{_TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": _TELEGRAM_CHAT_ID, "text": text}).encode()
-    try:
-        req = urllib.request.Request(url, data=data, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-    except Exception:
-        pass  # silent failure
+    _telegram_notify(message, priority, "ETH-HF-Trader")
 
 # ============================================================
 # SESSION & WEB3
@@ -118,43 +106,11 @@ acct     = w3.eth.account.from_key(PRIVATE_KEY)
 # ============================================================
 
 # === Heartbeat (health check) ===
-import threading as _heartbeat_thread
 _HEARTBEAT_FILE = "/root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf"
 
-def _heartbeat_writer():
-    """Write heartbeat timestamp every 60 seconds."""
-    while True:
-        try:
-            with open(_HEARTBEAT_FILE, "w") as f:
-                f.write(str(time.time()))
-        except Exception:
-            pass
-        time.sleep(60)
-
-def start_heartbeat():
-    t = _heartbeat_thread.Thread(target=_heartbeat_writer, daemon=True)
-    t.start()
-
-def is_alive(max_age=180):
-    """Return True if bot wrote a heartbeat within max_age seconds."""
-    try:
-        with open(_HEARTBEAT_FILE) as f:
-            return time.time() - float(f.read().strip()) < max_age
-    except Exception:
-        return False
-
+_logger = setup_logger(LOG_FILE, _HEARTBEAT_FILE)
 def log(msg, level="INFO"):
-    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] [{level}] {msg}"
-    print(line)
-    with open(LOG_FILE, "a") as f:
-        f.write(line + "\n")
-    # Refresh heartbeat on any log activity
-    try:
-        with open(_HEARTBEAT_FILE, "w") as f:
-            f.write(str(time.time()))
-    except Exception:
-        pass
+    _logger(msg, level)
 
 # --- RPC with retry ---
 def rpc(method, params=None):
@@ -336,8 +292,8 @@ def get_eth_price_from_gate_trades():
         data = r.json()
         if data and isinstance(data, list):
             return float(data[0]["price"])
-    except Exception:
-        pass
+    except Exception as e:
+        log(f"Fast price fetch error: {e}", "WARN")
     return None
 
 # ============================================================
@@ -669,7 +625,7 @@ def main():
     log(f"Max daily loss:${MAX_DAILY_LOSS_USD}")
     log(f"📡 Heartbeat: /root/.openclaw/workspace/eth-grid-bot/data/.heartbeat_hf")
     log(f"   Check: /root/.openclaw/bin/check_bot_alive.sh [max_age] [auto|hf]")
-    start_heartbeat()
+    start_heartbeat(_HEARTBEAT_FILE)
 
     state = load_state()
 
